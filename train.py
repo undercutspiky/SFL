@@ -65,13 +65,15 @@ def train(config_path, train_hospital: int, data_dir):
     print(f'{config_name} Config:\n{config.config}')
     print(inspect.getsource(config.get_optimizer_and_scheduler))
     print(inspect.getsource(config.get_transforms))
+    
     # Set up the model and transfer it to GPU
-    model = resnet50(weights=ResNet50_Weights.DEFAULT)
+    model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
     model.fc = torch.nn.Linear(model.fc.in_features, 1)
     torch.nn.init.constant_(model.fc.weight, 1e-4)
     torch.nn.init.constant_(model.fc.bias, 0)
     model.layer4.register_forward_hook(get_features('layer4'))
     model.to(cuda_device)
+    
     # Set up the dataloaders
     transform = config.get_transforms()
     dataloader = get_dataloader(data_dir, train_hospital, 'train', 64, transform, True, config.config)
@@ -141,22 +143,27 @@ def run_epoch(model, config, dataloader, epoch, optimizer, scheduler):
     for batch_idx, data in enumerate(dataloader, 0):
         (x, x_masks), labels, meta_data = data
         labels = labels.unsqueeze(1).to(cuda_device).float()
+        
         # Run the forward pass on images and save the embeddings
         x = x.to(cuda_device, memory_format=torch.channels_last)
         x_out = model(x)
         x_embeddings = features['layer4'].flatten(start_dim=1)
         x_loss = model_loss(x_out, labels)
+        
         # Run the forward pass on masks and save the embeddings
         x_masks = x_masks.to(cuda_device, memory_format=torch.channels_last)
         mask_out = model(x_masks)
         mask_embeddings = features['layer4'].flatten(start_dim=1)
         masks_loss = model_loss(mask_out, labels)
+        
         # Compute l2-distance
         distances_l4 = distance_fn(x_embeddings, mask_embeddings)
         dist_loss_l4 = mse_loss_fn(distances_l4, torch.zeros_like(distances_l4))
+        
         # Add up all the losses
         total_loss = x_loss + masks_loss + (dist_wt * dist_loss_l4)
         total_loss.backward()
+        
         # Update model
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
         optimizer.step()
